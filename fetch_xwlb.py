@@ -3,14 +3,10 @@
 
 import os
 import re
-import time
 from datetime import datetime, timedelta
 from xml.etree.ElementTree import Element, SubElement, tostring
 from xml.dom import minidom
-
-import requests
-from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
+import cloudscraper  # 新增
 
 BASE_URL = "https://cn.govopendata.com/xinwenlianbo"
 TARGET_DATE = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
@@ -21,51 +17,46 @@ def fetch_news(date_str: str) -> list:
     url = f"{BASE_URL}/{date_str}/"
     print(f"🌐 正在抓取: {url}")
 
+    # 使用 cloudscraper 创建 session（自动处理 Cloudflare 验证）
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        }
+    )
+    
+    # 添加请求头（模拟真实浏览器）
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.8,en-US;q=0.5,en;q=0.3",
         "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
     }
 
-    session = requests.Session()
-    retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-    session.mount('http://', HTTPAdapter(max_retries=retries))
-
     try:
-        resp = session.get(url, headers=headers, timeout=30)
+        resp = scraper.get(url, headers=headers, timeout=30)
         resp.encoding = "utf-8"
         print(f"✅ 状态码: {resp.status_code}")
         print(f"📄 内容长度: {len(resp.text)}")
         print(f"📝 内容预览: {resp.text[:200]}...")
-        
+
         if resp.status_code != 200:
             print(f"❌ HTTP 错误: {resp.status_code}")
             return []
-        if len(resp.text) < 500:
-            print("⚠️ 内容过短，可能被拦截或页面异常")
+        if "Just a moment" in resp.text or "Cloudflare" in resp.text:
+            print("⚠️ 页面仍包含 Cloudflare 验证，尝试失败")
             return []
-        
-        # 你的解析逻辑（保持你本地能跑的代码）
-        # 以下是你原本的解析代码，请保留你自己的实现
-        # 我给出一个通用示例，但你要替换成你自己的
-        # ----
-        # 此处粘贴你本地能正常工作的解析逻辑
-        # ----
-        
-        # 示例（你替换成你的）：
-        # 假设你从 main 标签提取
+
+        # ========== 你的解析逻辑（保持原样） ==========
+        # 以下是你原本的解析代码，我保留通用示例，但强烈建议你替换为你自己的
         import re
         main_pattern = r'<main[^>]*id="main-content"[^>]*>(.*?)</main>'
         match = re.search(main_pattern, resp.text, re.S)
         if not match:
-            print("⚠️ 未找到 main-content 区域，尝试其他解析")
-            # 退而求其次提取 body 文本
+            # 退而求其次提取 body
             body_text = re.sub(r'<[^>]+>', ' ', resp.text)
             body_text = re.sub(r'\s+', ' ', body_text).strip()
-            # 按段落分割
             lines = [x.strip() for x in body_text.split('。') if len(x.strip()) > 20]
             news_list = []
             for line in lines:
@@ -75,13 +66,11 @@ def fetch_news(date_str: str) -> list:
             return news_list
 
         main_content = match.group(1)
-        # 清理标签
         main_content = re.sub(r'<script[^>]*>.*?</script>', '', main_content, flags=re.S)
         main_content = re.sub(r'<style[^>]*>.*?</style>', '', main_content, flags=re.S)
         main_content = re.sub(r'<[^>]+>', ' ', main_content)
         main_content = re.sub(r'\s+', ' ', main_content).strip()
         
-        # 按 "## " 分割（根据你网站的实际情况）
         items = re.split(r'##\s+', main_content)
         news_list = []
         for item in items:
@@ -97,7 +86,7 @@ def fetch_news(date_str: str) -> list:
         
         print(f"✅ 成功提取 {len(news_list)} 条新闻")
         return news_list
-        
+
     except Exception as e:
         print(f"❌ 请求异常: {e}")
         return []
