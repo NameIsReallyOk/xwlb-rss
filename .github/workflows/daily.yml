@@ -2,8 +2,8 @@ name: 每日抓取新闻联播
 
 on:
   schedule:
-    - cron: '0 22 * * *'          # 每天 UTC 22:00（北京时间次日 06:00）
-  workflow_dispatch:              # 允许手动触发
+    - cron: '0 22 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -39,10 +39,15 @@ jobs:
           git diff --staged --quiet || git commit -m "自动更新: 新闻联播 RSS"
           git push
 
+      - name: 准备 Pages 部署目录
+        run: |
+          mkdir -p public
+          cp xwlb.xml public/
+
       - name: 上传 Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: xwlb.xml
+          path: public/
 
       - name: 部署到 GitHub Pages
         uses: actions/deploy-pages@v4
