@@ -1,0 +1,45 @@
+name: 每日抓取新闻联播
+
+on:
+  schedule:
+    # UTC 22:00 = 北京时间 06:00（第二天早上）
+    - cron: '0 22 * * *'
+  workflow_dispatch:  # 允许手动触发
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安装依赖
+        run: |
+          pip install -r requirements.txt
+
+      - name: 运行爬虫
+        run: |
+          python fetch_xwlb.py
+
+      - name: 提交 RSS 文件
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add xwlb.xml
+          git diff --staged --quiet || git commit -m "自动更新: 新闻联播 RSS"
+          git push
+
+      - name: 部署到 GitHub Pages
+        uses: actions/deploy-pages@v4
+        with:
+          artifact_name: github-pages
