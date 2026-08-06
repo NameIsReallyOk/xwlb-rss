@@ -15,7 +15,7 @@ if os.getenv("XWLB_DATE"):
 
 
 def fetch_news(date_str: str) -> list:
-    """抓取指定日期的新闻联播文字稿，使用 BeautifulSoup 精准提取"""
+    """抓取指定日期的新闻联播文字稿"""
     url = f"{BASE_URL}/{date_str}/"
     print(f"🌐 正在抓取: {url}")
 
@@ -32,13 +32,11 @@ def fetch_news(date_str: str) -> list:
         resp = scraper.get(url, headers=headers, timeout=30)
         resp.encoding = "utf-8"
         print(f"✅ 状态码: {resp.status_code}")
-        print(f"📄 内容长度: {len(resp.text)}")
 
         if resp.status_code != 200:
-            print(f"❌ HTTP 错误: {resp.status_code}")
             return []
         if "Just a moment" in resp.text or "Cloudflare" in resp.text:
-            print("⚠️ 页面仍包含 Cloudflare 验证")
+            print("⚠️ Cloudflare 拦截")
             return []
 
         soup = BeautifulSoup(resp.text, 'html.parser')
@@ -48,8 +46,6 @@ def fetch_news(date_str: str) -> list:
             return []
 
         articles = main.find_all('article', class_='content-section')
-        print(f"📰 找到 {len(articles)} 个新闻条目")
-
         news_list = []
         for article in articles:
             heading = article.find('h2', class_='content-heading')
@@ -61,6 +57,7 @@ def fetch_news(date_str: str) -> list:
             if not body_div:
                 continue
 
+            # 提取所有段落文本，保留分段
             paragraphs = body_div.find_all('p')
             if paragraphs:
                 content = '\n\n'.join(p.get_text(strip=True) for p in paragraphs)
@@ -75,17 +72,18 @@ def fetch_news(date_str: str) -> list:
                 "content": content
             })
 
-        print(f"✅ 成功提取 {len(news_list)} 条新闻")
+        print(f"✅ 提取到 {len(news_list)} 条新闻")
         return news_list
 
     except Exception as e:
-        print(f"❌ 请求异常: {e}")
+        print(f"❌ 错误: {e}")
         return []
 
 
 def generate_rss(news_list: list, date_str: str) -> str:
-    """生成 RSS XML，每条新闻一个 item"""
+    """生成标准 RSS 2.0，每条新闻一个 item，内容用 <p> 分段"""
     doc = minidom.Document()
+
     rss = doc.createElement("rss")
     rss.setAttribute("version", "2.0")
     doc.appendChild(rss)
@@ -93,42 +91,59 @@ def generate_rss(news_list: list, date_str: str) -> str:
     channel = doc.createElement("channel")
     rss.appendChild(channel)
 
-    title_elem = doc.createElement("title")
-    title_elem.appendChild(doc.createTextNode(f"新闻联播 文字版 {date_str}"))
-    channel.appendChild(title_elem)
+    # ---- 频道信息 ----
+    def add_text_node(parent, tag, text):
+        elem = doc.createElement(tag)
+        text_node = doc.createTextNode(text)
+        elem.appendChild(text_node)
+        parent.appendChild(elem)
 
-    link_elem = doc.createElement("link")
-    link_elem.appendChild(doc.createTextNode(f"{BASE_URL}/{date_str}/"))
-    channel.appendChild(link_elem)
+    add_text_node(channel, "title", f"新闻联播 文字版 {date_str}")
+    add_text_node(channel, "link", f"{BASE_URL}/{date_str}/")
+    add_text_node(channel, "description", f"{date_str} 新闻联播文字稿，共 {len(news_list)} 条")
+    add_text_node(channel, "pubDate", datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0800"))
 
-    desc_elem = doc.createElement("description")
-    desc_elem.appendChild(doc.createTextNode(f"{date_str} 新闻联播，共 {len(news_list)} 条"))
-    channel.appendChild(desc_elem)
-
-    pub_date = doc.createElement("pubDate")
-    pub_date.appendChild(doc.createTextNode(datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0800")))
-    channel.appendChild(pub_date)
-
+    # ---- 每个新闻条目 ----
     for item in news_list:
         item_elem = doc.createElement("item")
         channel.appendChild(item_elem)
 
-        title = doc.createElement("title")
-        title.appendChild(doc.createTextNode(item["title"]))
-        item_elem.appendChild(title)
+        # 标题
+        add_text_node(item_elem, "title", item["title"])
 
-        link = doc.createElement("link")
-        link.appendChild(doc.createTextNode(f"{BASE_URL}/{date_str}/"))
-        item_elem.appendChild(link)
+        # 链接（指向当天原文，所有条目共用）
+        add_text_node(item_elem, "link", f"{BASE_URL}/{date_str}/")
 
-        # ========== 关键修改：将换行转为 <br> 标签 ==========
-        content_html = item["content"].replace('\n\n', '<br><br>').replace('\n', '<br>')
+        # 唯一 GUID：用标题+日期
+        guid_content = f"{item['title']}-{date_str}"
+        guid_elem = doc.createElement("guid")
+        guid_elem.setAttribute("isPermaLink", "false")
+        guid_elem.appendChild(doc.createTextNode(guid_content))
+        item_elem.appendChild(guid_elem)
 
-        desc = doc.createElement("description")
-        cdata = doc.createCDATASection(content_html)
-        desc.appendChild(cdata)
-        item_elem.appendChild(desc)
+        # 发布日期（使用当天日期）
+        pub_date_elem = doc.createElement("pubDate")
+        pub_date_elem.appendChild(doc.createTextNode(
+            datetime.strptime(date_str, "%Y%m%d").strftime("%a, %d %b %Y 19:00:00 +0800")
+        ))
+        item_elem.appendChild(pub_date_elem)
 
+        # ---- 描述（内容）用 <p> 分段 ----
+        # 将内容按空行分割为段落
+        paragraphs = [p.strip() for p in item["content"].split('\n\n') if p.strip()]
+        # 如果没有段落（单段），直接包裹一个 <p>
+        if not paragraphs:
+            paragraphs = [item["content"].strip()]
+
+        # 构建 HTML 内容：每个段落用 <p>...</p> 包裹，中间用空行分隔
+        html_content = ''.join(f'<p>{para}</p>' for para in paragraphs)
+
+        desc_elem = doc.createElement("description")
+        cdata = doc.createCDATASection(html_content)
+        desc_elem.appendChild(cdata)
+        item_elem.appendChild(desc_elem)
+
+    # 输出
     return doc.toprettyxml(indent="  ", encoding="utf-8").decode("utf-8")
 
 
@@ -136,7 +151,7 @@ def main():
     print(f"📅 目标日期: {TARGET_DATE}")
     news = fetch_news(TARGET_DATE)
     if not news:
-        print("⚠️ 未获取到新闻，生成占位提示")
+        print("⚠️ 未获取到新闻，生成占位")
         news = [{
             "title": f"【提示】{TARGET_DATE} 新闻联播暂无数据",
             "content": f"请稍后重试，或访问 {BASE_URL}/{TARGET_DATE}/ 查看"
