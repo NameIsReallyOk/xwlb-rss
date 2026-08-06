@@ -14,7 +14,7 @@ if os.getenv("XWLB_DATE"):
 
 
 def fetch_news(date_str: str) -> list:
-    """抓取指定日期的新闻联播文字稿，返回单个条目的列表"""
+    """抓取指定日期的新闻联播文字稿，返回新闻列表"""
     url = f"{BASE_URL}/{date_str}/"
     print(f"🌐 正在抓取: {url}")
 
@@ -42,15 +42,15 @@ def fetch_news(date_str: str) -> list:
 
         html = resp.text
 
-        # 1. 提取 <main id="main-content"> 区域
+        # 提取 <main id="main-content">
         main_pattern = r'<main[^>]*id="main-content"[^>]*>(.*?)</main>'
         main_match = re.search(main_pattern, html, re.S)
         if not main_match:
-            print("⚠️ 未找到 main-content，尝试备用解析（body）")
-            # 备用：提取 body 文本，但尽量去除导航
+            print("⚠️ 未找到 main-content，尝试备用解析")
+            # 备用：提取 body 文本并清理
             body_text = re.sub(r'<[^>]+>', ' ', html)
             body_text = re.sub(r'\s+', ' ', body_text).strip()
-            # 尝试找到正文起始（通常跳过开头导航）
+            # 尝试找到正文起始
             start = body_text.find("党建")
             if start != -1:
                 body_text = body_text[start:]
@@ -61,17 +61,17 @@ def fetch_news(date_str: str) -> list:
 
         main_html = main_match.group(1)
 
-        # 2. 清理 <script> 和 <style>
+        # 清理 <script> 和 <style>
         main_html = re.sub(r'<script[^>]*>.*?</script>', '', main_html, flags=re.S)
         main_html = re.sub(r'<style[^>]*>.*?</style>', '', main_html, flags=re.S)
 
-        # 3. 将 <br> 和 </p> 转为换行符（保留段落）
+        # 将 <br> 和 </p> 转为换行符
         main_html = re.sub(r'<br\s*/?>', '\n', main_html, flags=re.I)
         main_html = re.sub(r'</p>', '\n', main_html, flags=re.I)
-        # 移除其他所有标签（保留文本）
+        # 移除其他 HTML 标签，保留文本
         main_html = re.sub(r'<[^>]+>', ' ', main_html)
 
-        # 4. 清理多余空白，但保留换行符
+        # 清理多余空白，但保留换行
         lines = main_html.split('\n')
         cleaned_lines = []
         for line in lines:
@@ -80,22 +80,42 @@ def fetch_news(date_str: str) -> list:
                 cleaned_lines.append(line)
         text = '\n'.join(cleaned_lines)
 
-        # 5. 去除开头的导航文字（“首页 新闻联播 ... 下一天”）
-        # 匹配类似 “首页 新闻联播 2026 年 8 月 5 日 ... 下一天 2026-08-04” 直到下一天之后
+        # 去除开头的导航文字（“首页 新闻联播 ... 下一天”）
         nav_pattern = r'^首页\s+新闻联播.*?下一天\s+\d{4}-\d{2}-\d{2}\s*'
         text = re.sub(nav_pattern, '', text, flags=re.S)
 
-        # 如果清理后文本太短，可能解析失败
-        if len(text) < 50:
-            print("⚠️ 解析后的正文过短，可能失败")
-            return []
+        # 去掉末尾可能的版权信息（如“©2026...”）
+        footer_pattern = r'\s*©\s*\d{4}.*$'
+        text = re.sub(footer_pattern, '', text, flags=re.S)
 
-        print(f"✅ 成功提取正文，长度 {len(text)}")
-        # 作为单条目返回
-        news_list = [{
-            "title": f"新闻联播 文字版 {date_str}",
-            "content": text
-        }]
+        # 按“【”分割新闻条目
+        # 每个条目以“【”开头，直到下一个“【”或结尾
+        raw_items = re.split(r'(?=【)', text)
+        news_list = []
+        for raw in raw_items:
+            raw = raw.strip()
+            if not raw or len(raw) < 20:
+                continue
+            # 提取标题：从“【”到第一个“】”
+            title_match = re.match(r'^【([^】]+)】', raw)
+            if title_match:
+                title = title_match.group(1).strip()
+                # 正文是标题之后的部分
+                content = raw[len(title_match.group(0)):].strip()
+            else:
+                # 如果没有“【”，取前50字符作为标题
+                title = raw[:50] + ("..." if len(raw) > 50 else "")
+                content = raw
+
+            # 如果正文为空，用原标题代替
+            if not content:
+                content = raw
+            news_list.append({
+                "title": title,
+                "content": content
+            })
+
+        print(f"✅ 成功提取 {len(news_list)} 条新闻")
         return news_list
 
     except Exception as e:
@@ -104,7 +124,7 @@ def fetch_news(date_str: str) -> list:
 
 
 def generate_rss(news_list: list, date_str: str) -> str:
-    """生成 RSS XML，使用 CDATA 保留正文换行"""
+    """生成 RSS XML，每个新闻作为一个 item"""
     doc = minidom.Document()
     rss = doc.createElement("rss")
     rss.setAttribute("version", "2.0")
@@ -113,26 +133,24 @@ def generate_rss(news_list: list, date_str: str) -> str:
     channel = doc.createElement("channel")
     rss.appendChild(channel)
 
-    # 标题
+    # 频道信息
     title_elem = doc.createElement("title")
     title_elem.appendChild(doc.createTextNode(f"新闻联播 文字版 {date_str}"))
     channel.appendChild(title_elem)
 
-    # 链接
     link_elem = doc.createElement("link")
     link_elem.appendChild(doc.createTextNode(f"{BASE_URL}/{date_str}/"))
     channel.appendChild(link_elem)
 
-    # 描述
     desc_elem = doc.createElement("description")
-    desc_elem.appendChild(doc.createTextNode(f"{date_str} 新闻联播文字稿"))
+    desc_elem.appendChild(doc.createTextNode(f"{date_str} 新闻联播，共 {len(news_list)} 条"))
     channel.appendChild(desc_elem)
 
-    # 发布日期
     pub_date = doc.createElement("pubDate")
     pub_date.appendChild(doc.createTextNode(datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0800")))
     channel.appendChild(pub_date)
 
+    # 逐条生成 item
     for item in news_list:
         item_elem = doc.createElement("item")
         channel.appendChild(item_elem)
@@ -142,12 +160,12 @@ def generate_rss(news_list: list, date_str: str) -> str:
         title.appendChild(doc.createTextNode(item["title"]))
         item_elem.appendChild(title)
 
-        # 链接（原文）
+        # 链接（指向当天原文，所有 item 共用）
         link = doc.createElement("link")
         link.appendChild(doc.createTextNode(f"{BASE_URL}/{date_str}/"))
         item_elem.appendChild(link)
 
-        # 描述 – 使用 CDATA 保留换行
+        # 正文（CDATA 保留换行）
         desc = doc.createElement("description")
         cdata = doc.createCDATASection(item["content"])
         desc.appendChild(cdata)
