@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timedelta
 import cloudscraper
 from xml.dom import minidom
+from bs4 import BeautifulSoup
 
 BASE_URL = "https://cn.govopendata.com/xinwenlianbo"
 TARGET_DATE = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
@@ -14,7 +15,7 @@ if os.getenv("XWLB_DATE"):
 
 
 def fetch_news(date_str: str) -> list:
-    """抓取指定日期的新闻联播文字稿，返回新闻列表"""
+    """抓取指定日期的新闻联播文字稿，使用 BeautifulSoup 精准提取"""
     url = f"{BASE_URL}/{date_str}/"
     print(f"🌐 正在抓取: {url}")
 
@@ -37,79 +38,46 @@ def fetch_news(date_str: str) -> list:
             print(f"❌ HTTP 错误: {resp.status_code}")
             return []
         if "Just a moment" in resp.text or "Cloudflare" in resp.text:
-            print("⚠️ 页面仍包含 Cloudflare 验证，尝试失败")
+            print("⚠️ 页面仍包含 Cloudflare 验证")
             return []
 
-        html = resp.text
+        # 使用 BeautifulSoup 解析
+        soup = BeautifulSoup(resp.text, 'html.parser')
 
-        # 提取 <main id="main-content">
-        main_pattern = r'<main[^>]*id="main-content"[^>]*>(.*?)</main>'
-        main_match = re.search(main_pattern, html, re.S)
-        if not main_match:
-            print("⚠️ 未找到 main-content，尝试备用解析")
-            # 备用：提取 body 文本并清理
-            body_text = re.sub(r'<[^>]+>', ' ', html)
-            body_text = re.sub(r'\s+', ' ', body_text).strip()
-            # 尝试找到正文起始
-            start = body_text.find("党建")
-            if start != -1:
-                body_text = body_text[start:]
-            if len(body_text) > 100:
-                return [{"title": f"新闻联播 文字版 {date_str}", "content": body_text}]
-            else:
-                return []
+        # 定位 main-content
+        main = soup.find('main', id='main-content')
+        if not main:
+            print("⚠️ 未找到 main-content")
+            return []
 
-        main_html = main_match.group(1)
+        # 找到所有 article.content-section
+        articles = main.find_all('article', class_='content-section')
+        print(f"📰 找到 {len(articles)} 个新闻条目")
 
-        # 清理 <script> 和 <style>
-        main_html = re.sub(r'<script[^>]*>.*?</script>', '', main_html, flags=re.S)
-        main_html = re.sub(r'<style[^>]*>.*?</style>', '', main_html, flags=re.S)
-
-        # 将 <br> 和 </p> 转为换行符
-        main_html = re.sub(r'<br\s*/?>', '\n', main_html, flags=re.I)
-        main_html = re.sub(r'</p>', '\n', main_html, flags=re.I)
-        # 移除其他 HTML 标签，保留文本
-        main_html = re.sub(r'<[^>]+>', ' ', main_html)
-
-        # 清理多余空白，但保留换行
-        lines = main_html.split('\n')
-        cleaned_lines = []
-        for line in lines:
-            line = line.strip()
-            if line:
-                cleaned_lines.append(line)
-        text = '\n'.join(cleaned_lines)
-
-        # 去除开头的导航文字（“首页 新闻联播 ... 下一天”）
-        nav_pattern = r'^首页\s+新闻联播.*?下一天\s+\d{4}-\d{2}-\d{2}\s*'
-        text = re.sub(nav_pattern, '', text, flags=re.S)
-
-        # 去掉末尾可能的版权信息（如“©2026...”）
-        footer_pattern = r'\s*©\s*\d{4}.*$'
-        text = re.sub(footer_pattern, '', text, flags=re.S)
-
-        # 按“【”分割新闻条目
-        # 每个条目以“【”开头，直到下一个“【”或结尾
-        raw_items = re.split(r'(?=【)', text)
         news_list = []
-        for raw in raw_items:
-            raw = raw.strip()
-            if not raw or len(raw) < 20:
+        for article in articles:
+            # 提取标题：h2.content-heading
+            heading = article.find('h2', class_='content-heading')
+            if not heading:
                 continue
-            # 提取标题：从“【”到第一个“】”
-            title_match = re.match(r'^【([^】]+)】', raw)
-            if title_match:
-                title = title_match.group(1).strip()
-                # 正文是标题之后的部分
-                content = raw[len(title_match.group(0)):].strip()
-            else:
-                # 如果没有“【”，取前50字符作为标题
-                title = raw[:50] + ("..." if len(raw) > 50 else "")
-                content = raw
+            title = heading.get_text(strip=True)
 
-            # 如果正文为空，用原标题代替
-            if not content:
-                content = raw
+            # 提取内容：div.content-body 下的所有 p 标签
+            body_div = article.find('div', class_='content-body')
+            if not body_div:
+                continue
+
+            # 提取所有段落文本，用换行连接
+            paragraphs = body_div.find_all('p')
+            if paragraphs:
+                content = '\n\n'.join(p.get_text(strip=True) for p in paragraphs)
+            else:
+                # 如果没有 p 标签，直接取文本
+                content = body_div.get_text(strip=True)
+
+            if not title or not content:
+                continue
+
             news_list.append({
                 "title": title,
                 "content": content
@@ -124,7 +92,7 @@ def fetch_news(date_str: str) -> list:
 
 
 def generate_rss(news_list: list, date_str: str) -> str:
-    """生成 RSS XML，每个新闻作为一个 item"""
+    """生成 RSS XML，每条新闻一个 item"""
     doc = minidom.Document()
     rss = doc.createElement("rss")
     rss.setAttribute("version", "2.0")
@@ -133,7 +101,6 @@ def generate_rss(news_list: list, date_str: str) -> str:
     channel = doc.createElement("channel")
     rss.appendChild(channel)
 
-    # 频道信息
     title_elem = doc.createElement("title")
     title_elem.appendChild(doc.createTextNode(f"新闻联播 文字版 {date_str}"))
     channel.appendChild(title_elem)
@@ -150,22 +117,18 @@ def generate_rss(news_list: list, date_str: str) -> str:
     pub_date.appendChild(doc.createTextNode(datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0800")))
     channel.appendChild(pub_date)
 
-    # 逐条生成 item
     for item in news_list:
         item_elem = doc.createElement("item")
         channel.appendChild(item_elem)
 
-        # 标题
         title = doc.createElement("title")
         title.appendChild(doc.createTextNode(item["title"]))
         item_elem.appendChild(title)
 
-        # 链接（指向当天原文，所有 item 共用）
         link = doc.createElement("link")
         link.appendChild(doc.createTextNode(f"{BASE_URL}/{date_str}/"))
         item_elem.appendChild(link)
 
-        # 正文（CDATA 保留换行）
         desc = doc.createElement("description")
         cdata = doc.createCDATASection(item["content"])
         desc.appendChild(cdata)
