@@ -41,38 +41,30 @@ def fetch_news(date_str: str) -> list:
             print("⚠️ 页面仍包含 Cloudflare 验证")
             return []
 
-        # 使用 BeautifulSoup 解析
         soup = BeautifulSoup(resp.text, 'html.parser')
-
-        # 定位 main-content
         main = soup.find('main', id='main-content')
         if not main:
             print("⚠️ 未找到 main-content")
             return []
 
-        # 找到所有 article.content-section
         articles = main.find_all('article', class_='content-section')
         print(f"📰 找到 {len(articles)} 个新闻条目")
 
         news_list = []
         for article in articles:
-            # 提取标题：h2.content-heading
             heading = article.find('h2', class_='content-heading')
             if not heading:
                 continue
             title = heading.get_text(strip=True)
 
-            # 提取内容：div.content-body 下的所有 p 标签
             body_div = article.find('div', class_='content-body')
             if not body_div:
                 continue
 
-            # 提取所有段落文本，用换行连接
             paragraphs = body_div.find_all('p')
             if paragraphs:
                 content = '\n\n'.join(p.get_text(strip=True) for p in paragraphs)
             else:
-                # 如果没有 p 标签，直接取文本
                 content = body_div.get_text(strip=True)
 
             if not title or not content:
@@ -129,8 +121,11 @@ def generate_rss(news_list: list, date_str: str) -> str:
         link.appendChild(doc.createTextNode(f"{BASE_URL}/{date_str}/"))
         item_elem.appendChild(link)
 
+        # ========== 关键修改：将换行转为 <br> 标签 ==========
+        content_html = item["content"].replace('\n\n', '<br><br>').replace('\n', '<br>')
+
         desc = doc.createElement("description")
-        cdata = doc.createCDATASection(item["content"])
+        cdata = doc.createCDATASection(content_html)
         desc.appendChild(cdata)
         item_elem.appendChild(desc)
 
