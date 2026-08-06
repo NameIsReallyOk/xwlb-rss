@@ -57,7 +57,7 @@ def fetch_news(date_str: str) -> list:
             if not body_div:
                 continue
 
-            # 提取所有段落文本，保留分段
+            # 保留段落
             paragraphs = body_div.find_all('p')
             if paragraphs:
                 content = '\n\n'.join(p.get_text(strip=True) for p in paragraphs)
@@ -81,9 +81,8 @@ def fetch_news(date_str: str) -> list:
 
 
 def generate_rss(news_list: list, date_str: str) -> str:
-    """生成标准 RSS 2.0，每条新闻一个 item，内容用 <p> 分段"""
+    """生成 RSS，每个 item 有独立链接"""
     doc = minidom.Document()
-
     rss = doc.createElement("rss")
     rss.setAttribute("version", "2.0")
     doc.appendChild(rss)
@@ -91,59 +90,52 @@ def generate_rss(news_list: list, date_str: str) -> str:
     channel = doc.createElement("channel")
     rss.appendChild(channel)
 
-    # ---- 频道信息 ----
-    def add_text_node(parent, tag, text):
+    # 频道信息
+    def add_text(parent, tag, text):
         elem = doc.createElement(tag)
-        text_node = doc.createTextNode(text)
-        elem.appendChild(text_node)
+        elem.appendChild(doc.createTextNode(text))
         parent.appendChild(elem)
 
-    add_text_node(channel, "title", f"新闻联播 文字版 {date_str}")
-    add_text_node(channel, "link", f"{BASE_URL}/{date_str}/")
-    add_text_node(channel, "description", f"{date_str} 新闻联播文字稿，共 {len(news_list)} 条")
-    add_text_node(channel, "pubDate", datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0800"))
+    add_text(channel, "title", f"新闻联播 文字版 {date_str}")
+    add_text(channel, "link", f"{BASE_URL}/{date_str}/")
+    add_text(channel, "description", f"{date_str} 新闻联播，共 {len(news_list)} 条")
+    add_text(channel, "pubDate", datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0800"))
 
-    # ---- 每个新闻条目 ----
-    for item in news_list:
+    # 每个条目
+    for idx, item in enumerate(news_list, start=1):
         item_elem = doc.createElement("item")
         channel.appendChild(item_elem)
 
         # 标题
-        add_text_node(item_elem, "title", item["title"])
+        add_text(item_elem, "title", item["title"])
 
-        # 链接（指向当天原文，所有条目共用）
-        add_text_node(item_elem, "link", f"{BASE_URL}/{date_str}/")
+        # 唯一链接：添加查询参数 p=idx
+        unique_link = f"{BASE_URL}/{date_str}/?p={idx}"
+        add_text(item_elem, "link", unique_link)
 
-        # 唯一 GUID：用标题+日期
-        guid_content = f"{item['title']}-{date_str}"
-        guid_elem = doc.createElement("guid")
-        guid_elem.setAttribute("isPermaLink", "false")
-        guid_elem.appendChild(doc.createTextNode(guid_content))
-        item_elem.appendChild(guid_elem)
+        # 唯一 GUID
+        guid = doc.createElement("guid")
+        guid.setAttribute("isPermaLink", "false")
+        guid.appendChild(doc.createTextNode(f"{item['title']}-{date_str}-{idx}"))
+        item_elem.appendChild(guid)
 
         # 发布日期（使用当天日期）
-        pub_date_elem = doc.createElement("pubDate")
-        pub_date_elem.appendChild(doc.createTextNode(
-            datetime.strptime(date_str, "%Y%m%d").strftime("%a, %d %b %Y 19:00:00 +0800")
-        ))
-        item_elem.appendChild(pub_date_elem)
+        pub_date_str = datetime.strptime(date_str, "%Y%m%d").strftime("%a, %d %b %Y 19:00:00 +0800")
+        add_text(item_elem, "pubDate", pub_date_str)
 
-        # ---- 描述（内容）用 <p> 分段 ----
-        # 将内容按空行分割为段落
+        # 正文：将段落用 <br/> 分割，放在 CDATA 中
+        # 先按空行分割，保留空行
         paragraphs = [p.strip() for p in item["content"].split('\n\n') if p.strip()]
-        # 如果没有段落（单段），直接包裹一个 <p>
         if not paragraphs:
             paragraphs = [item["content"].strip()]
-
-        # 构建 HTML 内容：每个段落用 <p>...</p> 包裹，中间用空行分隔
-        html_content = ''.join(f'<p>{para}</p>' for para in paragraphs)
+        # 用 <br/> 连接段落
+        content_html = '<br/>'.join(paragraphs)
 
         desc_elem = doc.createElement("description")
-        cdata = doc.createCDATASection(html_content)
+        cdata = doc.createCDATASection(content_html)
         desc_elem.appendChild(cdata)
         item_elem.appendChild(desc_elem)
 
-    # 输出
     return doc.toprettyxml(indent="  ", encoding="utf-8").decode("utf-8")
 
 
