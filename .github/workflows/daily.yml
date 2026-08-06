@@ -30,6 +30,8 @@ jobs:
       - name: 运行爬虫
         run: |
           python fetch_xwlb.py
+        env:
+          TZ: Asia/Shanghai   # 强制使用北京时间，确保日期计算正确
 
       - name: 提交 RSS 文件
         run: |
